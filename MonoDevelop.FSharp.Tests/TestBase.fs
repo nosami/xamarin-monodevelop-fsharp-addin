@@ -85,9 +85,10 @@ type Util =
         let rootDir = Path.GetDirectoryName (typeof<Util>.Assembly.Location) ++ ".." ++ ".." ++ "tests"
         Path.GetFullPath (rootDir)
 
+
 type TestBase() =
     static let firstRun = ref true
-    do MonoDevelop.FSharp.MDLanguageService.DisableVirtualFileSystem()
+    //do MonoDevelop.FSharp.MDLanguageService.DisableVirtualFileSystem()
     abstract member Setup: unit -> unit
 
     [<TestFixtureSetUp>]
@@ -110,6 +111,7 @@ type TestBase() =
 
     member x.InternalSetup (rootDir) =
         //Util.ClearTmpDir ()
+        MonoDevelop.Core.LoggingService.AddLogger(new ConsoleLogger
         Environment.SetEnvironmentVariable ("MONO_ADDINS_REGISTRY", rootDir)
         Environment.SetEnvironmentVariable ("XDG_CONFIG_HOME", rootDir)
         Runtime.Initialize (true)
@@ -117,5 +119,5 @@ type TestBase() =
         Gtk.Application.Init ()
         MonoDevelop.Ide.TypeSystem.TypeSystemService.TrackFileChanges <- true
         DesktopService.Initialize ()
-        Services.ProjectService.DefaultTargetFramework <- Runtime.SystemAssemblyService.GetTargetFramework (TargetFrameworkMoniker.NET_4_5)
+        Services.ProjectService.DefaultTargetFramework <- Runtime.SystemAssemblyService.GetTargetFramework (TargetFrameworkMoniker.NET_4_0)
         
