@@ -21,6 +21,8 @@ type FSharpOutlineTextEditorExtension() as x =
     let mutable treeView : PadTreeView option = None
     let mutable refreshingOutline : bool = false
     let mutable treeViewRealized : bool = false
+    let mutable timerId : uint32 = 0u
+    let mutable handler : IDisposable = null
 
     let refillTree() =
         match treeView with
@@ -33,35 +35,47 @@ type FSharpOutlineTextEditorExtension() as x =
 
                 DispatchService.AssertGuiThread()
                 Gdk.Threads.Enter()
-                ast |> Option.iter (fun ast ->
-                    let treeStore = treeView.Model :?> TreeStore
-                    treeStore.Clear()
-                    let toplevel = ast.GetNavigationItems()
-                                   |> Array.sortBy(fun xs -> xs.Declaration.Range.StartLine)
+                refreshingOutline <- false
 
-                    for item in toplevel do
-                        let iter = treeStore.AppendValues(item.Declaration)
-                        let children = item.Nested
-                                       |> Array.sortBy(fun xs -> xs.Range.StartLine)
+                if treeView.IsRealized then
+                    ast |> Option.iter (fun ast ->
+                        let treeStore = treeView.Model :?> TreeStore
+                        treeStore.Clear()
+                        let toplevel = ast.GetNavigationItems()
+                                       |> Array.sortBy(fun xs -> xs.Declaration.Range.StartLine)
 
-                        for nested in children do
-                            treeStore.AppendValues(iter, [| nested |]) |> ignore
+                        for item in toplevel do
+                            let iter = treeStore.AppendValues(item.Declaration)
+                            let children = item.Nested
+                                           |> Array.sortBy(fun xs -> xs.Range.StartLine)
 
-                    treeView.ExpandAll())
-                Gdk.Threads.Leave()
+                            for nested in children do
+                                treeStore.AppendValues(iter, [| nested |]) |> ignore
+
+                        treeView.ExpandAll())
+                    Gdk.Threads.Leave()
+                    timerId <- 0u
         | None -> ()
 
         refreshingOutline <- false
         false
 
-    let updateDocumentOutline _ =
+    member private x.updateDocumentOutline _ =
       if not refreshingOutline then
         refreshingOutline <- true
-        GLib.Timeout.Add (1000u, (fun _ -> refillTree())) |> ignore
+        timerId <- GLib.Timeout.Add (1000u, (fun _ -> refillTree()))
 
     override x.Initialize() =
         base.Initialize()
-        x.DocumentContext.DocumentParsed.Add(updateDocumentOutline)
+        handler <- x.DocumentContext.DocumentParsed.Subscribe(fun o e -> x.updateDocumentOutline())
+        ()
+
+    override x.Dispose() =
+        handler.Dispose()
+        if timerId > 0u then
+            GLib.Source.Remove timerId |> ignore
+        timerId <- 0u
+        base.Dispose()
 
     override x.IsValidInContext context =
         LanguageBindingService.GetBindingPerFileName (context.Name) <> null;
@@ -120,4 +134,8 @@ type FSharpOutlineTextEditorExtension() as x =
         member x.ReleaseOutlineWidget() =
             treeView |> Option.iter(fun tv -> Option.tryCast<ScrolledWindow>(tv.Parent) 
                                               |> Option.iter (fun sw -> sw.Destroy())
-                                              tv.Destroy())
+                                              let treeStore = tv.Model :?> TreeStore
+                                              if treeStore <> null then
+                                                  treeStore.Dispose()
+
+                                              treeView <- None)
