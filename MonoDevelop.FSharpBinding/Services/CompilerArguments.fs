@@ -75,15 +75,9 @@ module CompilerArguments =
               if isNull reference.Package then
                   tryGetFromHintPath()
               else 
-                  if reference.Include <> "System" then
-                      let assembly = 
-                              reference.Package.Assemblies
-                              |> Seq.find (fun a -> a.Name = reference.Include)
-                      [assembly.Location]
-                  else
-                      reference.Package.Assemblies
-                      |> Seq.map (fun a -> a.Location)
-                      |> List.ofSeq
+                  reference.Package.Assemblies
+                  |> Seq.map (fun a -> a.Location)
+                  |> List.ofSeq
 
           | ReferenceType.Project -> 
               let referencedProject = reference.Project :?> DotNetProject
