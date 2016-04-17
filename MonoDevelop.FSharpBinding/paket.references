@@ -3,3 +3,4 @@ Fantomas
 FSharp.Compiler.CodeDom
 Mono.Cecil
 Newtonsoft.Json
+FSharp.Control.Reactive

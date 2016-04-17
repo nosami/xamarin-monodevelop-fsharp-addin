@@ -5,6 +5,7 @@ open System.ComponentModel
 open System.Globalization
 open System.Diagnostics
 open System.Collections.Generic
+open System.Linq
 open System.Text
 open System.Threading.Tasks
 open System.Runtime.InteropServices
@@ -44,7 +45,7 @@ module Utils =
         try
             f x
         with
-        | ex -> ()
+        | ex -> MonoDevelop.Core.LoggingService.LogDebug (ex.ToString())
 
     module Option =
         let defaultTo def x = match x with | None -> def | Some value -> value
@@ -975,10 +976,13 @@ module XTerm =
             //Observable.ToObservable [
             //        //[ TelnetCommands.IAC; TelnetCommands.WILL; TelnetOptions.WindowSize ]  // NAWS
             //    ]
-        Observable.map processInput inputFromConsole (*|> Observable.merge preamble *)
-                |> Observable.filter (List.isEmpty >> not) |> Observable.map Array.ofList,
+        let input =
+            Observable.map processInput inputFromConsole (*|> Observable.merge preamble *)
+                |> Observable.filter (List.isEmpty >> not) |> Observable.map Array.ofList
+        let output =
             outputFromServer |> Observable.scan processOutputData (State(), Seq.empty) |> Observable.map snd
 
+        input, output
 type LineBuffer<'Char>(originalWidth : int, maxLength : int, blankChar : 'Char) =
     let mutable width = originalWidth
     let mutable lines : 'Char[] List = List<'Char[]>()
@@ -1067,14 +1071,14 @@ type Display(startupSize : Coord, maxBufferLines : int) as this =
     let onPropertyChanged propertyName =
         propertyChanged.Trigger(this, PropertyChangedEventArgs(propertyName))
     let onLinesChanged() = 
-        this.Lines |> Seq.iteri (fun lineNo line ->
-            //let pos = Point(origin.X, origin.Y + float lineNo * charSize.Height)
-            // Get FormattedText
-            let line =
-                Array.map (fun (c, a) ->
-                        if a.FontStyle.HasFlag FontStyle.Hidden then (' ', a) else (c, a))
-                    line
-            MonoDevelop.Core.LoggingService.LogDebug (string line))
+        //this.Lines |> Seq.iteri (fun lineNo line ->
+        //    //let pos = Point(origin.X, origin.Y + float lineNo * charSize.Height)
+        //    // Get FormattedText
+        //    let line =
+        //        Array.map (fun (c, a) ->
+        //                if a.FontStyle.HasFlag FontStyle.Hidden then (' ', a) else (c, a))
+        //            line
+            //MonoDevelop.Core.LoggingService.LogDebug (string line))
         onPropertyChanged "Lines"
 
 
@@ -1333,7 +1337,8 @@ type Audio =
 module OutputCommandHandler =
     let ProcessOutput (display : Display) : OutputCommand -> unit =
         function
-        | OutputCommand.Character (c, scrollRegion) -> display.TypeChar c scrollRegion
+        | OutputCommand.Character (c, scrollRegion) -> 
+            display.TypeChar c scrollRegion
         | OutputCommand.Tab -> display.Tab()
         | SetTabStop -> display.SetTabStop()
         | ClearTabStop -> display.ClearTabStop()
@@ -1415,7 +1420,7 @@ module KeyInputHandler =
         let k = uint32 key
         char (Keyval.ToUnicode k)
 
-    let ProcessInput (args : KeyPressEventArgs) : InputCommand option =
+    let ProcessInput (args : KeyReleaseEventArgs) : InputCommand option =
         args.RetVal <- true
         match args.Event.Key with
         | Gdk.Key.Return -> Some InputCommand.Return
@@ -1475,7 +1480,7 @@ type TextEventArgs(text : string) =
     member this.Text = text
 
 type ConsoleSession((*ssh : SshClient,*) display : Display,
-                    keyDown : IObservable<KeyPressEventArgs>,
+                    keyDown : IObservable<KeyReleaseEventArgs>,
                     //mouseWheel : IObservable<MouseWheelEventArgs>,
                     textPasted : IObservable<TextEventArgs>) =
     static let DebugPrint (host : string) (out : bool) (data : byte[]) : unit =
@@ -1509,7 +1514,7 @@ type ConsoleSession((*ssh : SshClient,*) display : Display,
         let fsiProcess =
             let startInfo =
                 new ProcessStartInfo
-                    (FileName = "/bin/bash", UseShellExecute = false, Arguments = "",
+                    (FileName = "/bin/bash", UseShellExecute = false, Arguments = "--login -i",
                     RedirectStandardError = true, CreateNoWindow = true, RedirectStandardOutput = true,
                     RedirectStandardInput = true, StandardErrorEncoding = Text.Encoding.UTF8, StandardOutputEncoding = Text.Encoding.UTF8)
     
@@ -1520,23 +1525,31 @@ type ConsoleSession((*ssh : SshClient,*) display : Display,
                 reraise()
         //ssh.Connect()
         //stream <- ssh.CreateShellStream("xterm", uint32 display.Size.X, uint32 display.Size.Y, 0u, 0u, 0)
-        let instream = fsiProcess.StandardInput.BaseStream
 
-        let outstream = fsiProcess.StandardOutput.BaseStream
+        fsiProcess.EnableRaisingEvents <- true
+        //fsiProcess.OutputDataReceived.Subscribe(fun x -> if not (isNull x) then MonoDevelop.Core.LoggingService.LogDebug x.Data) |> ignore
+        fsiProcess.ErrorDataReceived.Subscribe(fun x -> if not (isNull x) then MonoDevelop.Core.LoggingService.LogDebug ("err" + x.Data)) |> ignore
+        fsiProcess.BeginOutputReadLine()
+        fsiProcess.BeginErrorReadLine()
+        //fsiProcess.WaitForExit()
+        //let outstream = fsiProcess.StandardOutput.BaseStream
+        let output = Observable.merge fsiProcess.OutputDataReceived fsiProcess.ErrorDataReceived
         let outputFromServer : IObservable<byte[]> =
             Observable.map (fun (args: DataReceivedEventArgs) -> 
-            let x = System.Text.Encoding.UTF8.GetBytes args.Data
-            MonoDevelop.Core.LoggingService.LogDebug (args.Data)
+            let x = System.Text.Encoding.UTF8.GetBytes (args.Data + "\n")
+            //MonoDevelop.Core.LoggingService.LogDebug (args.Data)
             x
-            ) fsiProcess.OutputDataReceived
+            ) output
         let (inputToServer : IObservable<byte[]>, outputToConsole : IObservable<OutputCommand seq>) =
             XTerm.Process (outputFromServer, inputFromConsole)
         //let outputToConsole = Observable.merge outputToConsole //scrollCommands
         outputToConsole.Add (Seq.iter (OutputCommandHandler.ProcessOutput display |> ignoreErrorsInFn))
         //displayResizes.Add (fun () ->
         //    stream.SendWindowChangeRequest(uint32 display.Size.X, uint32 display.Size.Y, 0u, 0u))
+        let instream = fsiProcess.StandardInput.BaseStream
+        //let instream = fsiProcess.StandardOutput.BaseStream
         inputToServer.Add (fun (data : byte[]) -> instream.Write(data, 0, data.Length); instream.Flush())
-        ()
+        //()
     //interface IDisposable with
     //    member this.Dispose() =
     //        if stream <> null then stream.Dispose()
@@ -1545,14 +1558,36 @@ type ConsoleControl() =
     inherit MonoDevelop.Ide.Gui.PadContent()
 
     let view = new ConsoleView()
-    let display = Display(Coord.Origin, 1000)
+    let display = Display({ X = 80; Y = 40 }, 40)
     let textView = new TextView()
 
+    //textView.Style.FontDescription
+    //display.
     let textPasted = Event<Handler<TextEventArgs>, TextEventArgs>()
 
+    let renderLines() =
+        let mutable s = new StringBuilder()
+        //let text =
+        display.Lines
+        |> Seq.iter (fun line ->
+            let chars = line |> Seq.map (fun (c, attrs) -> c)
+            let linec = chars |> Array.ofSeq |> String
+            s <- s.AppendLine linec)
+        textView.Buffer.Text <- s.ToString()        
+        //textView.Buffer.
+    let displayLines = //: IObservable<unit> =
+        (display :> INotifyPropertyChanged).PropertyChanged
+            |> Observable.filter (fun args -> args.PropertyName = "Lines")
+            |> FSharp.Control.Reactive.Observable.throttle (TimeSpan.FromMilliseconds 500.)
+            |> Observable.subscribe(fun x -> renderLines())
+
     //textPasted.Trigger(this, TextEventArgs text)
-    let session = ConsoleSession(display, textView.KeyPressEvent, textPasted.Publish)
-    do session.Connect()
+    let session = ConsoleSession(display, textView.KeyReleaseEvent, textPasted.Publish)
+    do 
+        //textView.Editable <- false
+        let fontDescription = Pango.FontDescription.FromString "monospace"
+        textView.ModifyFont fontDescription
+        session.Connect()
 
     override x.Dispose() = textView.Dispose()
     override x.Control = Control.op_Implicit textView
