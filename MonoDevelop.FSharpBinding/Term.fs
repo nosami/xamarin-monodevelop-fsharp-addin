@@ -1568,14 +1568,13 @@ type ConsoleControl() =
     let textPasted = Event<Handler<TextEventArgs>, TextEventArgs>()
     let dict = Dictionary<Colour, TextTag>()
      
-    let getTag colour =
+    let getTag tagFetcher colour =
         if dict.ContainsKey colour then
             dict.[colour]
         else
             let red, green, blue = colour.AsRgb
             let hexcode = sprintf "#%02X%02X%02X" red green blue
-            let tag = new TextTag (hexcode)
-            tag.Foreground <- hexcode
+            let tag = tagFetcher(hexcode)
             buffer.TagTable.Add (tag)
             dict.Add(colour, tag)
             tag
@@ -1589,21 +1588,29 @@ type ConsoleControl() =
         |> Seq.iter (fun line ->
             //buffer.
             line |> Seq.iter (fun (c, attrs) -> 
-                let formatChar (c : byte) =
-                    if c >= 0x20uy && c < 0x7Fuy then
-                        String.Format("   {0} ('{1}')", c, (char c))
-                    else
-                        String.Format("   {0}", c)
-                MonoDevelop.Core.LoggingService.LogDebug (formatChar (byte c))
-                let foreground = attrs.Foreground
-                match foreground with
-                | Some colour -> 
-                    let tag = getTag colour
-                //if (byte c) >= 0x20uy && (byte c) < 0x7Fuy then
-                    buffer.InsertWithTags(iter, string c, [|tag|])
-                //    buffer.Insert(&iter, string c)
-                //)
-                | _ -> buffer.Insert(iter, string c))
+                //let formatChar (c : byte) =
+                //    if c >= 0x20uy && c < 0x7Fuy then
+                //        String.Format("   {0} ('{1}')", c, (char c))
+                //    else
+                //        String.Format("   {0}", c)
+                //MonoDevelop.Core.LoggingService.LogDebug (formatChar (byte c))
+
+                let foregroundTag colour =
+                    getTag (fun hex -> new TextTag ("fore" + hex, Foreground=hex)) colour
+
+                let backgroundTag colour =
+                    getTag (fun hex -> new TextTag ("back" + hex, Background=hex)) colour
+
+                let tags =
+                    match attrs.Foreground, attrs.Background with
+                    | Some foreground, Some background  -> 
+                        [|foregroundTag foreground; backgroundTag background|]
+                    | Some foreground, None  ->
+                        [|foregroundTag foreground|]
+                    | None, Some background ->
+                        [|backgroundTag background|]    
+                    | None, None -> [||]
+                buffer.InsertWithTags(iter, string c, tags))
             buffer.Insert(iter, "\n"))
 
             //let linec = chars |> Array.ofSeq |> String
@@ -2026,3 +2033,6 @@ type ConsoleControl() =
     //    if args.LeftButton = MouseButtonState.Pressed && this.IsMouseCaptureWithin then
     //        this.Selection <- args.GetPosition this |> getCharacterAt |> this.Selection.ExtendTo
     //    base.OnMouseMove args
+
+
+
