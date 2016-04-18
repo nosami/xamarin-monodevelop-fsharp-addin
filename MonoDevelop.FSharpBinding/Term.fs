@@ -1536,7 +1536,7 @@ type ConsoleSession((*ssh : SshClient,*) display : Display,
         let output = Observable.merge fsiProcess.OutputDataReceived fsiProcess.ErrorDataReceived
         let outputFromServer : IObservable<byte[]> =
             Observable.map (fun (args: DataReceivedEventArgs) -> 
-            let x = System.Text.Encoding.UTF8.GetBytes (args.Data + "\n")
+            let x = System.Text.Encoding.UTF8.GetBytes (args.Data + "\r\n")
             //MonoDevelop.Core.LoggingService.LogDebug (args.Data)
             x
             ) output
@@ -1558,43 +1558,104 @@ type ConsoleControl() =
     inherit MonoDevelop.Ide.Gui.PadContent()
 
     let view = new ConsoleView()
-    let display = Display({ X = 80; Y = 40 }, 40)
+    let display = Display({ X = 120; Y = 40 }, 40)
     let textView = new TextView()
-
+    let buffer = textView.Buffer
+    //textView.Style.Background(
+    
     //textView.Style.FontDescription
     //display.
     let textPasted = Event<Handler<TextEventArgs>, TextEventArgs>()
+    let dict = Dictionary<Colour, TextTag>()
+     
+    let getTag colour =
+        if dict.ContainsKey colour then
+            dict.[colour]
+        else
+            let red, green, blue = colour.AsRgb
+            let hexcode = sprintf "#%02X%02X%02X" red green blue
+            let tag = new TextTag (hexcode)
+            tag.Foreground <- hexcode
+            buffer.TagTable.Add (tag)
+            dict.Add(colour, tag)
+            tag
 
     let renderLines() =
-        let mutable s = new StringBuilder()
+        buffer.Clear()
+        let iter = ref buffer.EndIter
+        //let mutable s = new StringBuilder()
         //let text =
         display.Lines
         |> Seq.iter (fun line ->
-            let chars = line |> Seq.map (fun (c, attrs) -> c)
-            let linec = chars |> Array.ofSeq |> String
-            s <- s.AppendLine linec)
-        textView.Buffer.Text <- s.ToString()        
+            //buffer.
+            line |> Seq.iter (fun (c, attrs) -> 
+                let formatChar (c : byte) =
+                    if c >= 0x20uy && c < 0x7Fuy then
+                        String.Format("   {0} ('{1}')", c, (char c))
+                    else
+                        String.Format("   {0}", c)
+                MonoDevelop.Core.LoggingService.LogDebug (formatChar (byte c))
+                let foreground = attrs.Foreground
+                match foreground with
+                | Some colour -> 
+                    let tag = getTag colour
+                //if (byte c) >= 0x20uy && (byte c) < 0x7Fuy then
+                    buffer.InsertWithTags(iter, string c, [|tag|])
+                //    buffer.Insert(&iter, string c)
+                //)
+                | _ -> buffer.Insert(iter, string c))
+            buffer.Insert(iter, "\n"))
+
+            //let linec = chars |> Array.ofSeq |> String
+           // s <- s.AppendLine linec)
+        //buffer.Text <- s.ToString()
+        textView.ScrollMarkOnscreen (buffer.InsertMark)
+
         //textView.Buffer.
-    let displayLines = //: IObservable<unit> =
-        (display :> INotifyPropertyChanged).PropertyChanged
-            |> Observable.filter (fun args -> args.PropertyName = "Lines")
-            |> FSharp.Control.Reactive.Observable.throttle (TimeSpan.FromMilliseconds 500.)
-            |> Observable.subscribe(fun x -> renderLines())
+    
 
     //textPasted.Trigger(this, TextEventArgs text)
-    let session = ConsoleSession(display, textView.KeyReleaseEvent, textPasted.Publish)
+
     do 
         //textView.Editable <- false
-        let fontDescription = Pango.FontDescription.FromString "monospace"
+        let tag  = new TextTag ("blue_foreground")
+        tag.Foreground <- "#707070"
+        buffer.TagTable.Add (tag)
+
+        let fontDescription = Pango.FontDescription.FromString "Menlo"
         textView.ModifyFont fontDescription
-        session.Connect()
+        textView.ModifyBase(StateType.Normal, new Gdk.Color(0x00uy,0x00uy,0x00uy))
+        (display :> INotifyPropertyChanged).PropertyChanged
+            |> Observable.filter (fun args -> args.PropertyName = "Lines")
+            |> FSharp.Control.Reactive.Observable.throttle (TimeSpan.FromMilliseconds 100.)
+            |> Observable.subscribe(fun _ -> MonoDevelop.Core.Runtime.RunInMainThread(fun _ -> renderLines()) |> ignore) |> ignore
 
     override x.Dispose() = textView.Dispose()
     override x.Control = Control.op_Implicit textView
 
     override x.Initialize(container:MonoDevelop.Ide.Gui.IPadWindow) =
-        MonoDevelop.Core.LoggingService.LogDebug ("BASH: created!")
         textView.ShowAll()
+
+
+        let toolbar = container.GetToolbar(DockPositionType.Right)
+
+        let addButton icon action tooltip =
+            let button = new DockToolButton(icon)
+            button.Clicked.Add(action)
+            button.TooltipText <- tooltip
+            toolbar.Add(button)
+
+        //addButton "gtk-clear" (fun _ -> editor.Text <- "") "Clear"
+        addButton "gtk-refresh" (fun _ -> x.RestartFsi()) "Reset"
+
+        toolbar.ShowAll()
+
+    member x.RestartFsi() =
+        let session = ConsoleSession(display, textView.KeyReleaseEvent, textPasted.Publish)
+        MonoDevelop.Core.LoggingService.LogDebug ("BASH: created!")
+
+        session.Connect()
+
     //let border = Border()
     
     //let caret = Rectangle()
